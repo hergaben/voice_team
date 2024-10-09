@@ -32,16 +32,12 @@ class VoiceChatClient:
         self.stream_out = self.audio.open(format=FORMAT, channels=CHANNELS, rate=RATE, output=True,
                                           frames_per_buffer=CHUNK)
         self.running = True
+        self.websocket = None
 
     def apply_noise_suppression(self, data):
         # try:
-        #     # Преобразуем бинарные данные в numpy массив
         #     data_np = np.frombuffer(data, dtype=np.int16)
-        #
-        #     # Применяем шумоподавление
         #     reduced_noise = nr.reduce_noise(y=data_np, sr=RATE)
-        #
-        #     # Преобразуем обратно в бинарный формат
         #     return reduced_noise.astype(np.int16).tobytes()
         # except Exception as e:
         #     logging.error(f"Ошибка при шумоподавлении: {e}")
@@ -72,15 +68,28 @@ class VoiceChatClient:
             self.gui.display_message(f"Ошибка получения аудио: {e}")
             self.running = False
 
+    async def send_ping(self):
+        while self.running:
+            if self.websocket:  # Проверяем, что websocket открыт
+                try:
+                    ping_message = "PING"
+                    await self.websocket.send(ping_message)
+                    await asyncio.sleep(5)  # Отправляем пинг каждые 5 секунд
+                except Exception as e:
+                    logging.error(f"Ошибка отправки пинга: {e}")
+                    self.running = False
+                    await self.websocket.close()
+
     async def run(self):
         try:
             async with websockets.connect(self.uri, ssl=True) as websocket:
                 logging.info("Подключено к серверу WebSocket.")
                 self.gui.display_message("Подключено к серверу.")
                 self.websocket = websocket  # Сохраняем WebSocket
+                ping_task = asyncio.create_task(self.send_ping())  # Запускаем задачу пинга
                 send_task = asyncio.create_task(self.send_audio(websocket))
                 receive_task = asyncio.create_task(self.receive_audio(websocket))
-                await asyncio.gather(send_task, receive_task)
+                await asyncio.gather(send_task, receive_task, ping_task)
         except Exception as e:
             logging.error(f"Ошибка подключения: {e}")
             self.gui.display_message(f"Ошибка подключения: {e}")
@@ -112,7 +121,6 @@ class App:
         self.disconnect_button.pack(pady=5)
 
         self.client = None
-        self.thread = None
 
     def display_message(self, message):
         self.text_area.config(state='normal')
@@ -122,19 +130,10 @@ class App:
 
     def connect(self):
         self.client = VoiceChatClient(SERVER_URI, self)
-        self.thread = threading.Thread(target=self.client.start, daemon=True)
-        self.thread.start()
+        threading.Thread(target=self.client.start, daemon=True).start()
         self.display_message("Подключение к серверу...")
         self.connect_button.config(state=tk.DISABLED)
         self.disconnect_button.config(state=tk.NORMAL)
-
-        # Запуск пинга в основном цикле
-        self.root.after(1000, self.start_ping)
-
-    def start_ping(self):
-        if self.client:
-            asyncio.run_coroutine_threadsafe(self.send_ping(), asyncio.get_event_loop())
-        self.root.after(5000, self.start_ping)  # Запускать каждую секунду
 
     def disconnect(self):
         if self.client:
